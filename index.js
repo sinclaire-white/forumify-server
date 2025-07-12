@@ -1,16 +1,28 @@
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
+require("dotenv").config();
+const admin = require("firebase-admin");
+// const fs = require("fs");
+const serviceAccount = require("./ServiceAccountKey.json");
 const { MongoClient, ServerApiVersion } = require('mongodb');
 
-// Load .env variables
-dotenv.config();
 
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 const app = express();
 const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
+
+
+
+
+
+
+
 
 // Mongo URI & client setup
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.zxppowi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -42,12 +54,13 @@ async function run() {
     });
 
     // Start server
-    app.listen(port, () => {
-      console.log(`🚀 Server running on http://localhost:${port}`);
-    });
+    
   } catch (err) {
     console.error('❌ Error connecting to MongoDB:', err.message);
   }
+  app.listen(port, () => {
+      console.log(`🚀 Server running on http://localhost:${port}`);
+    });
 }
 
 run();
