@@ -3,3 +3,4 @@ node_modules
 firebase-admin-key.json
 .vercel
 ServiceAccountKey.json
+index.txt
