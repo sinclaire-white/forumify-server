@@ -60,26 +60,27 @@ async function run() {
     });
 
     // JWT creation route (verify Firebase token)
-   app.post("/jwt", async (req, res) => {
-  const { token } = req.body;
-  console.log("Incoming Firebase Token:", token?.slice(0, 30), "...");
+    app.post("/jwt", async (req, res) => {
+      const { token } = req.body;
+      console.log("Incoming Firebase Token:", token?.slice(0, 30), "...");
 
-  try {
-    const decodedUser = await admin.auth().verifyIdToken(token);
-    console.log(" Token verified for:", decodedUser.email);
+      try {
+        const decodedUser = await admin.auth().verifyIdToken(token);
+        console.log(" Token verified for:", decodedUser.email);
 
-    const jwtToken = jwt.sign(
-      { email: decodedUser.email, uid: decodedUser.uid },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+        const jwtToken = jwt.sign(
+          { email: decodedUser.email, uid: decodedUser.uid },
+          process.env.JWT_SECRET,
+          { expiresIn: "7d" }
+        );
 
-    res.send({ token: jwtToken });
-  } catch (error) {
-    console.error("❌ Firebase token verification failed:", error.message);
-    res.status(401).send({ error: "Unauthorized: Invalid Firebase token" });
-  }
-});
+        res.send({ token: jwtToken });
+      } catch (error) {
+        console.error("❌ Firebase token verification failed:", error.message);
+        res.status(401).send({ error: "Unauthorized: Invalid Firebase token" });
+      }
+    });
+
     // JWT verification middleware
     const verifyJWT = (req, res, next) => {
       const authHeader = req.headers.authorization;
@@ -103,11 +104,38 @@ async function run() {
       next();
     };
 
+   
+
+    // Public route to check if a user exists by email (no JWT required)
+   
+    app.get("/users/check-email", async (req, res) => {
+      const email = req.query.email;
+      if (!email) {
+        return res.status(400).send({ message: "Email query parameter is required." });
+      }
+      try {
+        const user = await userCollection.findOne({ email });
+        if (user) {
+          // Sending back necessary user details for the frontend to update or identify
+          res.send({ exists: true, user: { _id: user._id, email: user.email, name: user.name, photo: user.photo, role: user.role, badge: user.badge } });
+        } else {
+          res.send({ exists: false });
+        }
+      } catch (error) {
+        console.error("Error checking user existence:", error);
+        res.status(500).send({ message: "Internal server error during email check." });
+      }
+    });
+
     // Admin-only route to get all users
+   
     app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
       const users = await userCollection.find().toArray();
       res.send(users);
     });
+
+    
+
 
     // Admin-only route to make a user admin
     app.patch("/users/make-admin", verifyJWT, verifyAdmin, async (req, res) => {
