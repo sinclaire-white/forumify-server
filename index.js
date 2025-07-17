@@ -104,38 +104,45 @@ async function run() {
       next();
     };
 
-   
-
     // Public route to check if a user exists by email (no JWT required)
-   
     app.get("/users/check-email", async (req, res) => {
       const email = req.query.email;
       if (!email) {
-        return res.status(400).send({ message: "Email query parameter is required." });
+        return res
+          .status(400)
+          .send({ message: "Email query parameter is required." });
       }
       try {
         const user = await userCollection.findOne({ email });
         if (user) {
           // Sending back necessary user details for the frontend to update or identify
-          res.send({ exists: true, user: { _id: user._id, email: user.email, name: user.name, photo: user.photo, role: user.role, badge: user.badge } });
+          res.send({
+            exists: true,
+            user: {
+              _id: user._id,
+              email: user.email,
+              name: user.name,
+              photo: user.photo,
+              role: user.role,
+              badge: user.badge,
+            },
+          });
         } else {
           res.send({ exists: false });
         }
       } catch (error) {
         console.error("Error checking user existence:", error);
-        res.status(500).send({ message: "Internal server error during email check." });
+        res
+          .status(500)
+          .send({ message: "Internal server error during email check." });
       }
     });
 
     // Admin-only route to get all users
-   
     app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
       const users = await userCollection.find().toArray();
       res.send(users);
     });
-
-    
-
 
     // Admin-only route to make a user admin
     app.patch("/users/make-admin", verifyJWT, verifyAdmin, async (req, res) => {
@@ -157,7 +164,7 @@ async function run() {
       res.send({ message: `User ${email} promoted to admin` });
     });
 
-    // check post count of a user
+    // check post count of a user (Protected: requires JWT)
     app.get("/posts/count", verifyJWT, async (req, res) => {
       const email = req.query.email;
       if (!email) return res.status(400).send({ message: "Missing email" });
@@ -166,17 +173,51 @@ async function run() {
       res.send({ count });
     });
 
-    // Add new post
+   
+    // This endpoint now handles the logic for filtering based on frontend requests.
+    // It is deliberately *not* protected by verifyJWT so your Home page can show posts to everyone.
+    app.get("/posts", async (req, res) => {
+      try {
+        const { search, tag } = req.query; // Get search query and tag from URL parameters
+        let query = {}; // MongoDB query object
+
+        // Build query based on parameters
+        if (search) {
+          // Case-insensitive search on title or description or tag
+          query.$or = [
+            { title: { $regex: search, $options: "i" } },
+            { description: { $regex: search, $options: "i" } },
+            { tag: { $regex: search, $options: "i" } } // Include tag in general search
+          ];
+        }
+        if (tag) {
+          // Exact match for tag (case-insensitive) if a specific tag is provided
+          // If a search query also exists, this will combine with $or from search
+          query.tag = { $regex: `^${tag}$`, $options: "i" };
+        }
+
+        // Fetch posts based on the constructed query, sorted by creation date (newest first)
+        const posts = await postCollection.find(query).sort({ createdAt: -1 }).toArray();
+        res.send(posts);
+      } catch (error) {
+        console.error("Error fetching posts with filters:", error);
+        res.status(500).send({ message: "Internal server error fetching posts." });
+      }
+    });
+
+    // Add new post (Protected: requires JWT)
+   
     app.post("/posts", verifyJWT, async (req, res) => {
       const post = req.body;
       post.upVote = 0;
       post.downVote = 0;
-      post.createdAt = new Date();
+      post.createdAt = new Date(); // Ensure a proper timestamp is added
 
       const result = await postCollection.insertOne(post);
       res.send(result);
     });
 
+   
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
     });
