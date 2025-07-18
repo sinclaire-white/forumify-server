@@ -3,7 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 const admin = require("firebase-admin");
 const jwt = require("jsonwebtoken");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb"); // Import ObjectId
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -36,6 +36,7 @@ async function run() {
     const db = client.db("forumDB");
     const userCollection = db.collection("users");
     const postCollection = db.collection("posts");
+    const commentsCollection = db.collection("comments"); // NEW: Comments Collection
 
     // Root route
     app.get("/", (req, res) => {
@@ -115,7 +116,6 @@ async function run() {
       try {
         const user = await userCollection.findOne({ email });
         if (user) {
-          // Sending back necessary user details for the frontend to update or identify
           res.send({
             exists: true,
             user: {
@@ -173,51 +173,130 @@ async function run() {
       res.send({ count });
     });
 
-   
-    // This endpoint now handles the logic for filtering based on frontend requests.
-    // It is deliberately *not* protected by verifyJWT so your Home page can show posts to everyone.
+    
+
+    // New: Get total post count for pagination
+    app.get("/posts-total-count", async (req, res) => {
+      try {
+        const count = await postCollection.estimatedDocumentCount();
+        res.send({ count });
+      } catch (error) {
+        console.error("Error fetching total post count:", error);
+        res.status(500).send({ message: "Error fetching total count." });
+      }
+    });
+
+    // Public route to get all posts with optional search, tag filters, pagination, and sorting
     app.get("/posts", async (req, res) => {
       try {
-        const { search, tag } = req.query; // Get search query and tag from URL parameters
+        const { search, tag, sort, page = 1, limit = 5 } = req.query; // Added sort, page, limit
+        const skip = (parseInt(page) - 1) * parseInt(limit);
         let query = {}; // MongoDB query object
+        let sortOption = { createdAt: -1 }; // Default sort: newest to oldest
 
         // Build query based on parameters
         if (search) {
-          // Case-insensitive search on title or description or tag
           query.$or = [
             { title: { $regex: search, $options: "i" } },
             { description: { $regex: search, $options: "i" } },
-            { tag: { $regex: search, $options: "i" } } // Include tag in general search
+            { tag: { $regex: search, $options: "i" } }
           ];
         }
         if (tag) {
-          // Exact match for tag (case-insensitive) if a specific tag is provided
-          // If a search query also exists, this will combine with $or from search
           query.tag = { $regex: `^${tag}$`, $options: "i" };
         }
 
-        // Fetch posts based on the constructed query, sorted by creation date (newest first)
-        const posts = await postCollection.find(query).sort({ createdAt: -1 }).toArray();
-        res.send(posts);
+        let pipeline = [];
+        if (Object.keys(query).length > 0) {
+            pipeline.push({ $match: query }); // Apply initial filters
+        }
+
+        if (sort === 'popularity') {
+          // Aggregation for popularity sort
+          pipeline.push(
+            {
+              $addFields: {
+                voteDifference: { $subtract: ["$upVote", "$downVote"] }
+              }
+            },
+            {
+              $sort: { voteDifference: -1 } // Sort by popularity (descending)
+            }
+          );
+        } else {
+          // Default sort (newest to oldest) for other cases
+          pipeline.push({ $sort: sortOption });
+        }
+
+        // Add pagination stages
+        pipeline.push(
+          { $skip: skip },
+          { $limit: parseInt(limit) }
+        );
+
+        // Fetch posts
+        const posts = await postCollection.aggregate(pipeline).toArray();
+
+        // New: Get comment count for each post
+        
+        const postsWithCommentCounts = await Promise.all(posts.map(async (post) => {
+          const commentCount = await commentsCollection.countDocuments({ postId: post._id.toString() });
+          return { ...post, commentCount };
+        }));
+
+        res.send(postsWithCommentCounts);
+
       } catch (error) {
         console.error("Error fetching posts with filters:", error);
         res.status(500).send({ message: "Internal server error fetching posts." });
       }
     });
 
-    // Add new post (Protected: requires JWT)
+    // Route to get a single post by ID (public access)
+    app.get("/posts/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid Post ID format." });
+        }
+        const query = { _id: new ObjectId(id) };
+        const post = await postCollection.findOne(query);
+
+        if (!post) {
+          return res.status(404).send({ message: "Post not found." });
+        }
+
+        // Fetch comment count for the single post
+        const commentCount = await commentsCollection.countDocuments({ postId: post._id.toString() });
+
+        res.send({ ...post, commentCount }); // Include commentCount
+
+      } catch (error) {
+        console.error("Error fetching single post:", error);
+        res.status(500).send({ message: "Internal server error fetching post." });
+      }
+    });
+
    
+
+   
+
+    
+
+    // Add new post (Protected: requires JWT)
     app.post("/posts", verifyJWT, async (req, res) => {
       const post = req.body;
       post.upVote = 0;
       post.downVote = 0;
-      post.createdAt = new Date(); // Ensure a proper timestamp is added
+      post.createdAt = new Date();
 
       const result = await postCollection.insertOne(post);
       res.send(result);
     });
 
    
+
+
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
     });
