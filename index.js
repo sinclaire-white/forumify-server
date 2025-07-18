@@ -174,7 +174,6 @@ async function run() {
     });
 
     
-
     // New: Get total post count for pagination
     app.get("/posts-total-count", async (req, res) => {
       try {
@@ -238,7 +237,7 @@ async function run() {
         const posts = await postCollection.aggregate(pipeline).toArray();
 
         // New: Get comment count for each post
-        
+       
         const postsWithCommentCounts = await Promise.all(posts.map(async (post) => {
           const commentCount = await commentsCollection.countDocuments({ postId: post._id.toString() });
           return { ...post, commentCount };
@@ -277,11 +276,45 @@ async function run() {
       }
     });
 
-   
+    // NEW: Add a comment to a post (Protected: requires JWT)
+    app.post("/comments", verifyJWT, async (req, res) => {
+      const { postId, commentText, authorEmail, authorName, authorPhoto, postTitle } = req.body; // Added postTitle
+      if (!postId || !commentText || !authorEmail || !postTitle) {
+        return res.status(400).send({ message: "Missing required comment fields." });
+      }
+
+      // Optional: Check if post exists
+      const postExists = await postCollection.countDocuments({ _id: new ObjectId(postId) });
+      if (postExists === 0) {
+          return res.status(404).send({ message: "Post not found for commenting." });
+      }
+
+      const comment = {
+        postId: postId, // Store as string for easier querying from frontend ID
+        postTitle: postTitle, // Store post title for hint-2
+        commentText,
+        authorEmail,
+        authorName,
+        authorPhoto,
+        createdAt: new Date(),
+      };
+      const result = await commentsCollection.insertOne(comment);
+      res.send(result);
+    });
+
+    // NEW: Get comments for a specific post (Public access)
+    app.get("/comments/:postId", async (req, res) => {
+      try {
+        const postId = req.params.postId;
+        const comments = await commentsCollection.find({ postId: postId }).sort({ createdAt: 1 }).toArray(); // Sort oldest to newest
+        res.send(comments);
+      } catch (error) {
+        console.error("Error fetching comments:", error);
+        res.status(500).send({ message: "Error fetching comments." });
+      }
+    });
 
    
-
-    
 
     // Add new post (Protected: requires JWT)
     app.post("/posts", verifyJWT, async (req, res) => {
