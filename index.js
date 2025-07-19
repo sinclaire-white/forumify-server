@@ -327,6 +327,35 @@ async function run() {
       res.send(result);
     });
 
+   // Update post votes (Protected: requires JWT)
+    app.patch("/posts/vote/:id", verifyJWT, async (req, res) => {
+      try {
+        const postId = req.params.id;
+        const { type } = req.body; // 'upvote' or 'downvote'
+
+        if (!ObjectId.isValid(postId)) {
+          return res.status(400).send({ message: "Invalid Post ID format." });
+        }
+        if (type !== 'upvote' && type !== 'downvote') {
+          return res.status(400).send({ message: "Invalid vote type. Must be 'upvote' or 'downvote'." });
+        }
+
+        const updateField = type === 'upvote' ? 'upVote' : 'downVote';
+        const result = await postCollection.updateOne(
+          { _id: new ObjectId(postId) },
+          { $inc: { [updateField]: 1 } } // Increment by 1
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Post not found." });
+        }
+        res.send({ message: `Post ${type}d successfully.`, modifiedCount: result.modifiedCount });
+
+      } catch (error) {
+        console.error(`Error ${type}ing post:`, error);
+        res.status(500).send({ message: "Internal server error during voting." });
+      }
+    }); 
    
 
 
