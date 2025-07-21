@@ -311,7 +311,7 @@ app.patch("/users/update-badge", verifyJWT, async (req, res) => {
         // Fetch posts
         const posts = await postCollection.aggregate(pipeline).toArray();
 
-        // New: Get comment count for each post
+        //  Get comment count for each post
 
         const postsWithCommentCounts = await Promise.all(
           posts.map(async (post) => {
@@ -413,6 +413,59 @@ app.patch("/users/update-badge", verifyJWT, async (req, res) => {
       }
     });
 
+//  ENDPOINT: Submit a comment report ===
+app.post("/reports", verifyJWT, async (req, res) => {
+  const { commentId, feedback, reporterEmail } = req.body;
+
+  if (!commentId || !feedback || !reporterEmail) {
+    return res.status(400).send({ message: "Missing required report fields (commentId, feedback, reporterEmail)." });
+  }
+
+  // Security check: Ensure the reporter's email matches the authenticated user's email
+  if (reporterEmail !== req.user.email) {
+    return res.status(403).send({ message: "Forbidden: Reporter email mismatch with authenticated user." });
+  }
+
+  try {
+    // Optional: Check if the comment actually exists (good practice)
+    const comment = await commentsCollection.findOne({ _id: new ObjectId(commentId) });
+    if (!comment) {
+      return res.status(404).send({ message: "Comment not found." });
+    }
+
+    // Check if this specific user has already reported this comment to prevent duplicates
+    const existingReport = await reportsCollection.findOne({
+        commentId: commentId,
+        reporterEmail: reporterEmail
+    });
+
+    if (existingReport) {
+        return res.status(409).send({ message: "You have already reported this comment." });
+    }
+
+    // Create the report document to be stored in the 'reports' collection
+    const report = {
+      commentId: commentId,
+      postId: comment.postId,          // Link report to the original post ID
+      commentText: comment.commentText, // Store comment text for admin context
+      commenterEmail: comment.authorEmail, // Store commenter's email
+      feedback,                        // The selected feedback reason
+      reporterEmail,                   // The email of the user who reported
+      status: "pending",               // Initial status for admin review
+      reportedAt: new Date(),          // Timestamp of the report
+    };
+    const result = await reportsCollection.insertOne(report);
+    res.send(result);
+  } catch (error) {
+    console.error("Error submitting report:", error);
+    res.status(500).send({ message: "Internal server error submitting report." });
+  }
+});
+
+
+
+
+
     // Add new post (Protected: requires JWT)
     app.post("/posts", verifyJWT, async (req, res) => {
       const post = req.body;
@@ -426,6 +479,9 @@ app.patch("/users/update-badge", verifyJWT, async (req, res) => {
 
 
 //for UserProfile: Get a user's recent posts 
+
+
+
 app.get("/my-posts", verifyJWT, async (req, res) => {
   try {
     const email = req.query.email;
@@ -439,9 +495,15 @@ app.get("/my-posts", verifyJWT, async (req, res) => {
     let pipeline = [
       { $match: { authorEmail: email } }, // Filter by the user's email
       {
+        $addFields: {
+          // Convert the post's ObjectId _id to a string to match comment.postId
+          postIdString: { $toString: "$_id" } 
+        }
+      },
+      {
         $lookup: { // Join with comments collection to count comments
           from: "comments",
-          localField: "_id", // Post's _id (ObjectId)
+          localField: "postIdString", // Use the new string field for lookup
           foreignField: "postId", // Comment's postId (string of ObjectId)
           as: "comments"
         }
@@ -452,7 +514,7 @@ app.get("/my-posts", verifyJWT, async (req, res) => {
         }
       },
       { $sort: { createdAt: -1 } }, // Sort newest to oldest for "Recent Posts"
-      { $project: { comments: 0 } } // Exclude the comments array itself from the final output
+      { $project: { comments: 0, postIdString: 0 } } // Exclude the comments array and the temporary postIdString
     ];
 
     if (limit > 0) {
