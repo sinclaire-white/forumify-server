@@ -3,7 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 const admin = require("firebase-admin");
 const jwt = require("jsonwebtoken");
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb"); // Import ObjectId
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb"); 
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -44,17 +44,49 @@ async function run() {
     });
 
     // Save or update user (register or Google login)
+
     app.post("/users", async (req, res) => {
       const user = req.body;
       const existingUser = await userCollection.findOne({ email: user.email });
 
       if (existingUser) {
-        return res.send({ message: "User already exists" });
+        // Ensure existing users also have role and badge if missing (for retrofitting)
+        let needsUpdate = false;
+        let updateFields = {};
+
+        if (!existingUser.badge) {
+          //  If badge is missing
+          updateFields.badge = "bronze";
+          needsUpdate = true;
+        }
+        if (!existingUser.role) {
+          //  If role is missing
+          updateFields.role =
+            user.email === "white@walter.com" ? "admin" : "user";
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          await userCollection.updateOne(
+            { email: user.email },
+            { $set: updateFields }
+          );
+          // Fetch updated user to send back
+          const updatedExistingUser = await userCollection.findOne({
+            email: user.email,
+          });
+          return res.send({
+            message: "User already exists, updated info",
+            user: updatedExistingUser,
+          });
+        }
+
+        return res.send({ message: "User already exists", user: existingUser });
       }
 
-      // Assign admin role only if email matches
+      // Assign role and badge for NEW users
       user.role = user.email === "white@walter.com" ? "admin" : "user";
-      user.badge = "bronze";
+      user.badge = "bronze"; // Default to bronze upon registration 
 
       const result = await userCollection.insertOne(user);
       res.send(result);
@@ -116,15 +148,15 @@ async function run() {
       try {
         const user = await userCollection.findOne({ email });
         if (user) {
-          res.send({
+           res.send({
             exists: true,
             user: {
               _id: user._id,
               email: user.email,
               name: user.name,
               photo: user.photo,
-              role: user.role,
-              badge: user.badge,
+              role: user.role || "user", // Ensure role is always sent, default to 'user'
+              badge: user.badge || "bronze", // Ensure badge is always sent, default to 'bronze'
             },
           });
         } else {
@@ -164,17 +196,62 @@ async function run() {
       res.send({ message: `User ${email} promoted to admin` });
     });
 
+    // for UserProfile: Update User Badge
+app.patch("/users/update-badge", verifyJWT, async (req, res) => {
+  const { email, badge } = req.body;
+  // Only the user themselves or an admin can update their badge
+  if (req.user.email !== email && req.user.role !== 'admin') {
+      return res.status(403).send({ message: "Forbidden: Not authorized to update this user's badge." });
+  }
+  if (!email || !badge) {
+    return res.status(400).send({ message: "Email and badge are required." });
+  }
+  if (!["bronze", "gold"].includes(badge)) {
+    return res.status(400).send({ message: "Invalid badge type." });
+  }
+
+  try {
+    const result = await userCollection.updateOne(
+      { email: email },
+      { $set: { badge: badge } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "User not found." });
+    }
+    res.send({ message: `User ${email}'s badge updated to ${badge}.` });
+  } catch (error) {
+    console.error("Error updating user badge:", error);
+    res.status(500).send({ message: "Internal server error updating badge." });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     // check post count of a user (Protected: requires JWT)
     app.get("/posts/count", verifyJWT, async (req, res) => {
       const email = req.query.email;
-      if (!email) return res.status(400).send({ message: "Missing email" });
+       if (!email || email !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden: Unauthorized access to post count." });
+      }
 
       const count = await postCollection.countDocuments({ authorEmail: email });
       res.send({ count });
     });
 
-    
-    // New: Get total post count for pagination
+    // Get total post count for pagination
     app.get("/posts-total-count", async (req, res) => {
       try {
         const count = await postCollection.estimatedDocumentCount();
@@ -198,7 +275,7 @@ async function run() {
           query.$or = [
             { title: { $regex: search, $options: "i" } },
             { description: { $regex: search, $options: "i" } },
-            { tag: { $regex: search, $options: "i" } }
+            { tag: { $regex: search, $options: "i" } },
           ];
         }
         if (tag) {
@@ -207,19 +284,19 @@ async function run() {
 
         let pipeline = [];
         if (Object.keys(query).length > 0) {
-            pipeline.push({ $match: query }); // Apply initial filters
+          pipeline.push({ $match: query }); // Apply initial filters
         }
 
-        if (sort === 'popularity') {
+        if (sort === "popularity") {
           // Aggregation for popularity sort
           pipeline.push(
             {
               $addFields: {
-                voteDifference: { $subtract: ["$upVote", "$downVote"] }
-              }
+                voteDifference: { $subtract: ["$upVote", "$downVote"] },
+              },
             },
             {
-              $sort: { voteDifference: -1 } // Sort by popularity (descending)
+              $sort: { voteDifference: -1 }, // Sort by popularity (descending)
             }
           );
         } else {
@@ -228,26 +305,28 @@ async function run() {
         }
 
         // Add pagination stages
-        pipeline.push(
-          { $skip: skip },
-          { $limit: parseInt(limit) }
-        );
+        pipeline.push({ $skip: skip }, { $limit: parseInt(limit) });
 
         // Fetch posts
         const posts = await postCollection.aggregate(pipeline).toArray();
 
         // New: Get comment count for each post
-       
-        const postsWithCommentCounts = await Promise.all(posts.map(async (post) => {
-          const commentCount = await commentsCollection.countDocuments({ postId: post._id.toString() });
-          return { ...post, commentCount };
-        }));
+
+        const postsWithCommentCounts = await Promise.all(
+          posts.map(async (post) => {
+            const commentCount = await commentsCollection.countDocuments({
+              postId: post._id.toString(),
+            });
+            return { ...post, commentCount };
+          })
+        );
 
         res.send(postsWithCommentCounts);
-
       } catch (error) {
         console.error("Error fetching posts with filters:", error);
-        res.status(500).send({ message: "Internal server error fetching posts." });
+        res
+          .status(500)
+          .send({ message: "Internal server error fetching posts." });
       }
     });
 
@@ -266,27 +345,43 @@ async function run() {
         }
 
         // Fetch comment count for the single post
-        const commentCount = await commentsCollection.countDocuments({ postId: post._id.toString() });
+        const commentCount = await commentsCollection.countDocuments({
+          postId: post._id.toString(),
+        });
 
         res.send({ ...post, commentCount }); // Include commentCount
-
       } catch (error) {
         console.error("Error fetching single post:", error);
-        res.status(500).send({ message: "Internal server error fetching post." });
+        res
+          .status(500)
+          .send({ message: "Internal server error fetching post." });
       }
     });
 
     // NEW: Add a comment to a post (Protected: requires JWT)
     app.post("/comments", verifyJWT, async (req, res) => {
-      const { postId, commentText, authorEmail, authorName, authorPhoto, postTitle } = req.body; // Added postTitle
+      const {
+        postId,
+        commentText,
+        authorEmail,
+        authorName,
+        authorPhoto,
+        postTitle,
+      } = req.body; // Added postTitle
       if (!postId || !commentText || !authorEmail || !postTitle) {
-        return res.status(400).send({ message: "Missing required comment fields." });
+        return res
+          .status(400)
+          .send({ message: "Missing required comment fields." });
       }
 
       // Optional: Check if post exists
-      const postExists = await postCollection.countDocuments({ _id: new ObjectId(postId) });
+      const postExists = await postCollection.countDocuments({
+        _id: new ObjectId(postId),
+      });
       if (postExists === 0) {
-          return res.status(404).send({ message: "Post not found for commenting." });
+        return res
+          .status(404)
+          .send({ message: "Post not found for commenting." });
       }
 
       const comment = {
@@ -302,19 +397,20 @@ async function run() {
       res.send(result);
     });
 
-    // NEW: Get comments for a specific post (Public access)
+    // Get comments for a specific post (Public access)
     app.get("/comments/:postId", async (req, res) => {
       try {
         const postId = req.params.postId;
-        const comments = await commentsCollection.find({ postId: postId }).sort({ createdAt: 1 }).toArray(); // Sort oldest to newest
+        const comments = await commentsCollection
+          .find({ postId: postId })
+          .sort({ createdAt: 1 })
+          .toArray(); // Sort oldest to newest
         res.send(comments);
       } catch (error) {
         console.error("Error fetching comments:", error);
         res.status(500).send({ message: "Error fetching comments." });
       }
     });
-
-   
 
     // Add new post (Protected: requires JWT)
     app.post("/posts", verifyJWT, async (req, res) => {
@@ -327,7 +423,56 @@ async function run() {
       res.send(result);
     });
 
-   // Update post votes (Protected: requires JWT)
+
+//for UserProfile: Get a user's recent posts 
+app.get("/my-posts", verifyJWT, async (req, res) => {
+  try {
+    const email = req.query.email;
+    const limit = parseInt(req.query.limit) || 0; // Optional limit (e.g., for "recent 3 posts")
+
+    // Security check: Ensure the requested email matches the authenticated user's email
+    if (!email || email !== req.user.email) {
+      return res.status(403).send({ message: "Forbidden: Unauthorized access to posts." });
+    }
+
+    let pipeline = [
+      { $match: { authorEmail: email } }, // Filter by the user's email
+      {
+        $lookup: { // Join with comments collection to count comments
+          from: "comments",
+          localField: "_id", // Post's _id (ObjectId)
+          foreignField: "postId", // Comment's postId (string of ObjectId)
+          as: "comments"
+        }
+      },
+      {
+        $addFields: { // Add commentCount field
+          commentCount: { $size: "$comments" } // Count of comments for each post
+        }
+      },
+      { $sort: { createdAt: -1 } }, // Sort newest to oldest for "Recent Posts"
+      { $project: { comments: 0 } } // Exclude the comments array itself from the final output
+    ];
+
+    if (limit > 0) {
+      pipeline.push({ $limit: limit }); // Apply limit if specified (e.g., for 3 recent posts)
+    }
+
+    const myPosts = await postCollection.aggregate(pipeline).toArray();
+    res.send(myPosts);
+  } catch (error) {
+    console.error("Error fetching user's posts for profile:", error);
+    res.status(500).send({ message: "Internal server error fetching your posts." });
+  }
+});
+
+
+
+
+
+
+
+    // Update post votes (Protected: requires JWT)
     app.patch("/posts/vote/:id", verifyJWT, async (req, res) => {
       try {
         const postId = req.params.id;
@@ -336,11 +481,15 @@ async function run() {
         if (!ObjectId.isValid(postId)) {
           return res.status(400).send({ message: "Invalid Post ID format." });
         }
-        if (type !== 'upvote' && type !== 'downvote') {
-          return res.status(400).send({ message: "Invalid vote type. Must be 'upvote' or 'downvote'." });
+        if (type !== "upvote" && type !== "downvote") {
+          return res
+            .status(400)
+            .send({
+              message: "Invalid vote type. Must be 'upvote' or 'downvote'.",
+            });
         }
 
-        const updateField = type === 'upvote' ? 'upVote' : 'downVote';
+        const updateField = type === "upvote" ? "upVote" : "downVote";
         const result = await postCollection.updateOne(
           { _id: new ObjectId(postId) },
           { $inc: { [updateField]: 1 } } // Increment by 1
@@ -349,15 +498,17 @@ async function run() {
         if (result.matchedCount === 0) {
           return res.status(404).send({ message: "Post not found." });
         }
-        res.send({ message: `Post ${type}d successfully.`, modifiedCount: result.modifiedCount });
-
+        res.send({
+          message: `Post ${type}d successfully.`,
+          modifiedCount: result.modifiedCount,
+        });
       } catch (error) {
         console.error(`Error ${type}ing post:`, error);
-        res.status(500).send({ message: "Internal server error during voting." });
+        res
+          .status(500)
+          .send({ message: "Internal server error during voting." });
       }
-    }); 
-   
-
+    });
 
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
