@@ -36,7 +36,8 @@ async function run() {
     const db = client.db("forumDB");
     const userCollection = db.collection("users");
     const postCollection = db.collection("posts");
-    const commentsCollection = db.collection("comments"); // NEW: Comments Collection
+    const commentsCollection = db.collection("comments"); 
+    const reportsCollection = db.collection("reports");
 
     // Root route
     app.get("/", (req, res) => {
@@ -466,6 +467,43 @@ app.get("/my-posts", verifyJWT, async (req, res) => {
   }
 });
 
+// Delete a post (Protected: requires JWT, only author can delete) 
+app.delete("/posts/:id", verifyJWT, async (req, res) => {
+  try {
+    const postId = req.params.id;
+    const userEmail = req.user.email; // Email of the authenticated user
+
+    if (!ObjectId.isValid(postId)) {
+      return res.status(400).send({ message: "Invalid Post ID format." });
+    }
+
+    const post = await postCollection.findOne({ _id: new ObjectId(postId) });
+    if (!post) {
+      return res.status(404).send({ message: "Post not found." });
+    }
+
+    // Authorization check: Ensure only the author can delete their post
+    if (post.authorEmail !== userEmail) {
+      return res.status(403).send({ message: "Forbidden: You are not the author of this post." });
+    }
+
+    // Delete the post
+    const result = await postCollection.deleteOne({ _id: new ObjectId(postId) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ message: "Post not found or could not be deleted." });
+    }
+
+    // IMPORTANT: Also delete all associated comments for the deleted post
+    // Assuming comments `postId` field stores the string ID of the post
+    await commentsCollection.deleteMany({ postId: postId });
+
+    res.send({ message: "Post and its comments deleted successfully.", deletedCount: result.deletedCount });
+  } catch (error) {
+    console.error("Error deleting post:", error);
+    res.status(500).send({ message: "Internal server error during post deletion." });
+  }
+});
 
 
 
