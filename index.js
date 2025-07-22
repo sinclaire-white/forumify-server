@@ -222,6 +222,91 @@ app.get("/announcements", async (req, res) => {
     }
 });
 
+
+// Admin-only route to get all reported comments
+app.get("/reports", verifyJWT, verifyAdmin, async (req, res) => {
+  try {
+    const reports = await reportsCollection.find().sort({ reportedAt: -1 }).toArray();
+    res.send(reports);
+  } catch (error) {
+    console.error("Error fetching reported comments:", error);
+    res.status(500).send({ message: "Internal server error fetching reported comments." });
+  }
+});
+
+// Admin-only route to delete a reported comment/activity
+app.delete("/reports/:id", verifyJWT, verifyAdmin, async (req, res) => {
+  const reportId = req.params.id;
+
+  if (!ObjectId.isValid(reportId)) {
+    return res.status(400).send({ message: "Invalid Report ID format." });
+  }
+
+  try {
+    const report = await reportsCollection.findOne({ _id: new ObjectId(reportId) });
+    if (!report) {
+      return res.status(404).send({ message: "Report not found." });
+    }
+
+    // OPTIONAL: Delete the actual comment associated with this report
+    // This is a strong action. Decide if you want to implement this.
+    // If you do, make sure commentId in report is a string and matches comments._id
+    if (report.commentId) {
+        // Attempt to delete the actual comment
+        const commentDeleteResult = await commentsCollection.deleteOne({ _id: new ObjectId(report.commentId) });
+        if (commentDeleteResult.deletedCount > 0) {
+            console.log(`Associated comment ${report.commentId} deleted.`);
+        } else {
+            console.log(`Associated comment ${report.commentId} not found or already deleted.`);
+        }
+    }
+
+    // Delete the report entry itself
+    const result = await reportsCollection.deleteOne({ _id: new ObjectId(reportId) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ message: "Report not found or could not be deleted." });
+    }
+
+    res.send({ message: "Report and associated comment (if existed) deleted successfully." });
+  } catch (error) {
+    console.error("Error deleting reported comment:", error);
+    res.status(500).send({ message: "Internal server error deleting reported comment." });
+  }
+});
+
+// Admin-only route to dismiss/approve a report (without deleting comment)
+app.patch("/reports/:id/dismiss", verifyJWT, verifyAdmin, async (req, res) => {
+  const reportId = req.params.id;
+
+  if (!ObjectId.isValid(reportId)) {
+    return res.status(400).send({ message: "Invalid Report ID format." });
+  }
+
+  try {
+    const result = await reportsCollection.updateOne(
+      { _id: new ObjectId(reportId) },
+      { $set: { status: "dismissed", dismissedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "Report not found." });
+    }
+    if (result.modifiedCount === 0) {
+        return res.status(400).send({ message: "Report already dismissed or no changes made." });
+    }
+    res.send({ message: "Report dismissed successfully." });
+  } catch (error) {
+    console.error("Error dismissing report:", error);
+    res.status(500).send({ message: "Internal server error dismissing report." });
+  }
+})
+
+
+
+
+
+
     // Public route to check if a user exists by email (no JWT required)
     app.get("/users/check-email", async (req, res) => {
       const email = req.query.email;
@@ -293,25 +378,42 @@ app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
   }
 });
 
-    // Admin-only route to make a user admin
-    app.patch("/users/make-admin", verifyJWT, verifyAdmin, async (req, res) => {
-      const { email } = req.body;
+    // Admin-only route to make a user admin (updated to use ID from params)
+app.patch("/users/:id/make-admin", verifyJWT, verifyAdmin, async (req, res) => {
+  const userId = req.params.id;
 
-      if (email === "white@walter.com") {
-        return res.status(400).send({ error: "Cannot change main admin role" });
-      }
+  if (!ObjectId.isValid(userId)) {
+    return res.status(400).send({ message: "Invalid User ID format." });
+  }
 
-      const result = await userCollection.updateOne(
-        { email },
-        { $set: { role: "admin" } }
-      );
+  try {
+    const user = await userCollection.findOne({ _id: new ObjectId(userId) });
+    if (!user) {
+      return res.status(404).send({ message: "User not found." });
+    }
 
-      if (result.matchedCount === 0) {
-        return res.status(404).send({ error: "User not found" });
-      }
+    if (user.email === "white@walter.com") { // Still prevent changing the main admin
+      return res.status(400).send({ error: "Cannot change main admin role." });
+    }
+    if (user.role === "admin") {
+        return res.status(400).send({ message: "User is already an admin." });
+    }
 
-      res.send({ message: `User ${email} promoted to admin` });
-    });
+    const result = await userCollection.updateOne(
+      { _id: new ObjectId(userId) },
+      { $set: { role: "admin" } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ error: "User not found or role not changed." });
+    }
+    
+    res.send({ message: `User ${user.name || user.email} promoted to admin.`, modifiedCount: result.modifiedCount });
+  } catch (error) {
+    console.error("Error making user admin:", error);
+    res.status(500).send({ message: "Internal server error making user admin." });
+  }
+});
 
     // for UserProfile: Update User Badge
     app.patch("/users/update-badge", verifyJWT, async (req, res) => {
