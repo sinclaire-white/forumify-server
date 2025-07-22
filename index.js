@@ -187,7 +187,40 @@ app.get("/tags", async (req, res) => {
   }
 });
 
+// Admin-only route to make an announcement
+app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
+  const { authorImage, authorName, title, description } = req.body;
 
+  if (!authorImage || !authorName || !title || !description) {
+    return res.status(400).send({ message: "Missing required announcement fields." });
+  }
+
+  try {
+    const newAnnouncement = {
+      authorImage,
+      authorName,
+      title,
+      description,
+      createdAt: new Date(),
+    };
+    const result = await announcementsCollection.insertOne(newAnnouncement);
+    res.status(201).send({ message: "Announcement created successfully", announcementId: result.insertedId });
+  } catch (error) {
+    console.error("Error creating announcement:", error);
+    res.status(500).send({ message: "Internal server error creating announcement." });
+  }
+});
+
+// Public route to get all announcements (for homepage display)
+app.get("/announcements", async (req, res) => {
+    try {
+        const announcements = await announcementsCollection.find().sort({ createdAt: -1 }).toArray();
+        res.send(announcements);
+    } catch (error) {
+        console.error("Error fetching announcements:", error);
+        res.status(500).send({ message: "Internal server error fetching announcements." });
+    }
+});
 
     // Public route to check if a user exists by email (no JWT required)
     app.get("/users/check-email", async (req, res) => {
