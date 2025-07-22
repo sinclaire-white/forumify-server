@@ -154,6 +154,41 @@ async function run() {
       }
     });
 
+
+// Admin-only route to add a new tag
+app.post("/tags", verifyJWT, verifyAdmin, async (req, res) => {
+  const { name } = req.body;
+  if (!name || name.trim() === "") {
+    return res.status(400).send({ message: "Tag name cannot be empty." });
+  }
+
+  try {
+    const existingTag = await tagsCollection.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
+    if (existingTag) {
+      return res.status(409).send({ message: `Tag '${name}' already exists.` });
+    }
+
+    const result = await tagsCollection.insertOne({ name: name.trim().toLowerCase() });
+    res.status(201).send({ message: "Tag added successfully", tagId: result.insertedId });
+  } catch (error) {
+    console.error("Error adding tag:", error);
+    res.status(500).send({ message: "Internal server error adding tag." });
+  }
+});
+
+// Admin-only route to get all tags (useful for frontend dropdowns)
+app.get("/tags", async (req, res) => {
+  try {
+    const tags = await tagsCollection.find({}).toArray();
+    res.send(tags);
+  } catch (error) {
+    console.error("Error fetching tags:", error);
+    res.status(500).send({ message: "Internal server error fetching tags." });
+  }
+});
+
+
+
     // Public route to check if a user exists by email (no JWT required)
     app.get("/users/check-email", async (req, res) => {
       const email = req.query.email;
