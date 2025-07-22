@@ -3,7 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 const admin = require("firebase-admin");
 const jwt = require("jsonwebtoken");
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb"); 
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -36,9 +36,10 @@ async function run() {
     const db = client.db("forumDB");
     const userCollection = db.collection("users");
     const postCollection = db.collection("posts");
-    const commentsCollection = db.collection("comments"); 
+    const commentsCollection = db.collection("comments");
     const reportsCollection = db.collection("reports");
-
+    const tagsCollection = db.collection("tags");
+    const announcementsCollection = db.collection("announcements");
     // Root route
     app.get("/", (req, res) => {
       res.send("Server is running!");
@@ -87,7 +88,7 @@ async function run() {
 
       // Assign role and badge for NEW users
       user.role = user.email === "white@walter.com" ? "admin" : "user";
-      user.badge = "bronze"; // Default to bronze upon registration 
+      user.badge = "bronze"; // Default to bronze upon registration
 
       const result = await userCollection.insertOne(user);
       res.send(result);
@@ -137,6 +138,21 @@ async function run() {
       }
       next();
     };
+    // Admin-only route to get site statistics
+    app.get("/admin-stats", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        const totalUsers = await userCollection.countDocuments();
+        const totalPosts = await postCollection.countDocuments();
+        const totalComments = await commentsCollection.countDocuments();
+
+        res.send({ totalUsers, totalPosts, totalComments });
+      } catch (error) {
+        console.error("Error fetching admin stats:", error);
+        res
+          .status(500)
+          .send({ message: "Internal server error fetching admin stats." });
+      }
+    });
 
     // Public route to check if a user exists by email (no JWT required)
     app.get("/users/check-email", async (req, res) => {
@@ -149,7 +165,7 @@ async function run() {
       try {
         const user = await userCollection.findOne({ email });
         if (user) {
-           res.send({
+          res.send({
             exists: true,
             user: {
               _id: user._id,
@@ -198,54 +214,49 @@ async function run() {
     });
 
     // for UserProfile: Update User Badge
-app.patch("/users/update-badge", verifyJWT, async (req, res) => {
-  const { email, badge } = req.body;
-  // Only the user themselves or an admin can update their badge
-  if (req.user.email !== email && req.user.role !== 'admin') {
-      return res.status(403).send({ message: "Forbidden: Not authorized to update this user's badge." });
-  }
-  if (!email || !badge) {
-    return res.status(400).send({ message: "Email and badge are required." });
-  }
-  if (!["bronze", "gold"].includes(badge)) {
-    return res.status(400).send({ message: "Invalid badge type." });
-  }
+    app.patch("/users/update-badge", verifyJWT, async (req, res) => {
+      const { email, badge } = req.body;
+      // Only the user themselves or an admin can update their badge
+      if (req.user.email !== email && req.user.role !== "admin") {
+        return res
+          .status(403)
+          .send({
+            message: "Forbidden: Not authorized to update this user's badge.",
+          });
+      }
+      if (!email || !badge) {
+        return res
+          .status(400)
+          .send({ message: "Email and badge are required." });
+      }
+      if (!["bronze", "gold"].includes(badge)) {
+        return res.status(400).send({ message: "Invalid badge type." });
+      }
 
-  try {
-    const result = await userCollection.updateOne(
-      { email: email },
-      { $set: { badge: badge } }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).send({ message: "User not found." });
-    }
-    res.send({ message: `User ${email}'s badge updated to ${badge}.` });
-  } catch (error) {
-    console.error("Error updating user badge:", error);
-    res.status(500).send({ message: "Internal server error updating badge." });
-  }
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+      try {
+        const result = await userCollection.updateOne(
+          { email: email },
+          { $set: { badge: badge } }
+        );
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "User not found." });
+        }
+        res.send({ message: `User ${email}'s badge updated to ${badge}.` });
+      } catch (error) {
+        console.error("Error updating user badge:", error);
+        res
+          .status(500)
+          .send({ message: "Internal server error updating badge." });
+      }
+    });
 
     // check post count of a user (Protected: requires JWT)
     app.get("/posts/count", verifyJWT, async (req, res) => {
       const email = req.query.email;
-       if (!email || email !== req.user.email) {
-        return res.status(403).send({ message: "Forbidden: Unauthorized access to post count." });
+      if (!email || email !== req.user.email) {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: Unauthorized access to post count." });
       }
 
       const count = await postCollection.countDocuments({ authorEmail: email });
@@ -413,58 +424,70 @@ app.patch("/users/update-badge", verifyJWT, async (req, res) => {
       }
     });
 
-//  ENDPOINT: Submit a comment report ===
-app.post("/reports", verifyJWT, async (req, res) => {
-  const { commentId, feedback, reporterEmail } = req.body;
+    //  ENDPOINT: Submit a comment report ===
+    app.post("/reports", verifyJWT, async (req, res) => {
+      const { commentId, feedback, reporterEmail } = req.body;
 
-  if (!commentId || !feedback || !reporterEmail) {
-    return res.status(400).send({ message: "Missing required report fields (commentId, feedback, reporterEmail)." });
-  }
+      if (!commentId || !feedback || !reporterEmail) {
+        return res
+          .status(400)
+          .send({
+            message:
+              "Missing required report fields (commentId, feedback, reporterEmail).",
+          });
+      }
 
-  // Security check: Ensure the reporter's email matches the authenticated user's email
-  if (reporterEmail !== req.user.email) {
-    return res.status(403).send({ message: "Forbidden: Reporter email mismatch with authenticated user." });
-  }
+      // Security check: Ensure the reporter's email matches the authenticated user's email
+      if (reporterEmail !== req.user.email) {
+        return res
+          .status(403)
+          .send({
+            message:
+              "Forbidden: Reporter email mismatch with authenticated user.",
+          });
+      }
 
-  try {
-    // Optional: Check if the comment actually exists (good practice)
-    const comment = await commentsCollection.findOne({ _id: new ObjectId(commentId) });
-    if (!comment) {
-      return res.status(404).send({ message: "Comment not found." });
-    }
+      try {
+        // Optional: Check if the comment actually exists (good practice)
+        const comment = await commentsCollection.findOne({
+          _id: new ObjectId(commentId),
+        });
+        if (!comment) {
+          return res.status(404).send({ message: "Comment not found." });
+        }
 
-    // Check if this specific user has already reported this comment to prevent duplicates
-    const existingReport = await reportsCollection.findOne({
-        commentId: commentId,
-        reporterEmail: reporterEmail
+        // Check if this specific user has already reported this comment to prevent duplicates
+        const existingReport = await reportsCollection.findOne({
+          commentId: commentId,
+          reporterEmail: reporterEmail,
+        });
+
+        if (existingReport) {
+          return res
+            .status(409)
+            .send({ message: "You have already reported this comment." });
+        }
+
+        // Create the report document to be stored in the 'reports' collection
+        const report = {
+          commentId: commentId,
+          postId: comment.postId, // Link report to the original post ID
+          commentText: comment.commentText, // Store comment text for admin context
+          commenterEmail: comment.authorEmail, // Store commenter's email
+          feedback, // The selected feedback reason
+          reporterEmail, // The email of the user who reported
+          status: "pending", // Initial status for admin review
+          reportedAt: new Date(), // Timestamp of the report
+        };
+        const result = await reportsCollection.insertOne(report);
+        res.send(result);
+      } catch (error) {
+        console.error("Error submitting report:", error);
+        res
+          .status(500)
+          .send({ message: "Internal server error submitting report." });
+      }
     });
-
-    if (existingReport) {
-        return res.status(409).send({ message: "You have already reported this comment." });
-    }
-
-    // Create the report document to be stored in the 'reports' collection
-    const report = {
-      commentId: commentId,
-      postId: comment.postId,          // Link report to the original post ID
-      commentText: comment.commentText, // Store comment text for admin context
-      commenterEmail: comment.authorEmail, // Store commenter's email
-      feedback,                        // The selected feedback reason
-      reporterEmail,                   // The email of the user who reported
-      status: "pending",               // Initial status for admin review
-      reportedAt: new Date(),          // Timestamp of the report
-    };
-    const result = await reportsCollection.insertOne(report);
-    res.send(result);
-  } catch (error) {
-    console.error("Error submitting report:", error);
-    res.status(500).send({ message: "Internal server error submitting report." });
-  }
-});
-
-
-
-
 
     // Add new post (Protected: requires JWT)
     app.post("/posts", verifyJWT, async (req, res) => {
@@ -477,100 +500,113 @@ app.post("/reports", verifyJWT, async (req, res) => {
       res.send(result);
     });
 
+    //for UserProfile: Get a user's recent posts
 
-//for UserProfile: Get a user's recent posts 
+    app.get("/my-posts", verifyJWT, async (req, res) => {
+      try {
+        const email = req.query.email;
+        const limit = parseInt(req.query.limit) || 0; // Optional limit (e.g., for "recent 3 posts")
 
-
-
-app.get("/my-posts", verifyJWT, async (req, res) => {
-  try {
-    const email = req.query.email;
-    const limit = parseInt(req.query.limit) || 0; // Optional limit (e.g., for "recent 3 posts")
-
-    // Security check: Ensure the requested email matches the authenticated user's email
-    if (!email || email !== req.user.email) {
-      return res.status(403).send({ message: "Forbidden: Unauthorized access to posts." });
-    }
-
-    let pipeline = [
-      { $match: { authorEmail: email } }, // Filter by the user's email
-      {
-        $addFields: {
-          // Convert the post's ObjectId _id to a string to match comment.postId
-          postIdString: { $toString: "$_id" } 
+        // Security check: Ensure the requested email matches the authenticated user's email
+        if (!email || email !== req.user.email) {
+          return res
+            .status(403)
+            .send({ message: "Forbidden: Unauthorized access to posts." });
         }
-      },
-      {
-        $lookup: { // Join with comments collection to count comments
-          from: "comments",
-          localField: "postIdString", // Use the new string field for lookup
-          foreignField: "postId", // Comment's postId (string of ObjectId)
-          as: "comments"
+
+        let pipeline = [
+          { $match: { authorEmail: email } }, // Filter by the user's email
+          {
+            $addFields: {
+              // Convert the post's ObjectId _id to a string to match comment.postId
+              postIdString: { $toString: "$_id" },
+            },
+          },
+          {
+            $lookup: {
+              // Join with comments collection to count comments
+              from: "comments",
+              localField: "postIdString", // Use the new string field for lookup
+              foreignField: "postId", // Comment's postId (string of ObjectId)
+              as: "comments",
+            },
+          },
+          {
+            $addFields: {
+              // Add commentCount field
+              commentCount: { $size: "$comments" }, // Count of comments for each post
+            },
+          },
+          { $sort: { createdAt: -1 } }, // Sort newest to oldest for "Recent Posts"
+          { $project: { comments: 0, postIdString: 0 } }, // Exclude the comments array and the temporary postIdString
+        ];
+
+        if (limit > 0) {
+          pipeline.push({ $limit: limit }); // Apply limit if specified (e.g., for 3 recent posts)
         }
-      },
-      {
-        $addFields: { // Add commentCount field
-          commentCount: { $size: "$comments" } // Count of comments for each post
+
+        const myPosts = await postCollection.aggregate(pipeline).toArray();
+        res.send(myPosts);
+      } catch (error) {
+        console.error("Error fetching user's posts for profile:", error);
+        res
+          .status(500)
+          .send({ message: "Internal server error fetching your posts." });
+      }
+    });
+
+    // Delete a post (Protected: requires JWT, only author can delete)
+    app.delete("/posts/:id", verifyJWT, async (req, res) => {
+      try {
+        const postId = req.params.id;
+        const userEmail = req.user.email; // Email of the authenticated user
+
+        if (!ObjectId.isValid(postId)) {
+          return res.status(400).send({ message: "Invalid Post ID format." });
         }
-      },
-      { $sort: { createdAt: -1 } }, // Sort newest to oldest for "Recent Posts"
-      { $project: { comments: 0, postIdString: 0 } } // Exclude the comments array and the temporary postIdString
-    ];
 
-    if (limit > 0) {
-      pipeline.push({ $limit: limit }); // Apply limit if specified (e.g., for 3 recent posts)
-    }
+        const post = await postCollection.findOne({
+          _id: new ObjectId(postId),
+        });
+        if (!post) {
+          return res.status(404).send({ message: "Post not found." });
+        }
 
-    const myPosts = await postCollection.aggregate(pipeline).toArray();
-    res.send(myPosts);
-  } catch (error) {
-    console.error("Error fetching user's posts for profile:", error);
-    res.status(500).send({ message: "Internal server error fetching your posts." });
-  }
-});
+        // Authorization check: Ensure only the author can delete their post
+        if (post.authorEmail !== userEmail) {
+          return res
+            .status(403)
+            .send({
+              message: "Forbidden: You are not the author of this post.",
+            });
+        }
 
-// Delete a post (Protected: requires JWT, only author can delete) 
-app.delete("/posts/:id", verifyJWT, async (req, res) => {
-  try {
-    const postId = req.params.id;
-    const userEmail = req.user.email; // Email of the authenticated user
+        // Delete the post
+        const result = await postCollection.deleteOne({
+          _id: new ObjectId(postId),
+        });
 
-    if (!ObjectId.isValid(postId)) {
-      return res.status(400).send({ message: "Invalid Post ID format." });
-    }
+        if (result.deletedCount === 0) {
+          return res
+            .status(404)
+            .send({ message: "Post not found or could not be deleted." });
+        }
 
-    const post = await postCollection.findOne({ _id: new ObjectId(postId) });
-    if (!post) {
-      return res.status(404).send({ message: "Post not found." });
-    }
+        // IMPORTANT: Also delete all associated comments for the deleted post
+        // Assuming comments `postId` field stores the string ID of the post
+        await commentsCollection.deleteMany({ postId: postId });
 
-    // Authorization check: Ensure only the author can delete their post
-    if (post.authorEmail !== userEmail) {
-      return res.status(403).send({ message: "Forbidden: You are not the author of this post." });
-    }
-
-    // Delete the post
-    const result = await postCollection.deleteOne({ _id: new ObjectId(postId) });
-
-    if (result.deletedCount === 0) {
-      return res.status(404).send({ message: "Post not found or could not be deleted." });
-    }
-
-    // IMPORTANT: Also delete all associated comments for the deleted post
-    // Assuming comments `postId` field stores the string ID of the post
-    await commentsCollection.deleteMany({ postId: postId });
-
-    res.send({ message: "Post and its comments deleted successfully.", deletedCount: result.deletedCount });
-  } catch (error) {
-    console.error("Error deleting post:", error);
-    res.status(500).send({ message: "Internal server error during post deletion." });
-  }
-});
-
-
-
-
-
+        res.send({
+          message: "Post and its comments deleted successfully.",
+          deletedCount: result.deletedCount,
+        });
+      } catch (error) {
+        console.error("Error deleting post:", error);
+        res
+          .status(500)
+          .send({ message: "Internal server error during post deletion." });
+      }
+    });
 
     // Update post votes (Protected: requires JWT)
     app.patch("/posts/vote/:id", verifyJWT, async (req, res) => {
@@ -582,11 +618,9 @@ app.delete("/posts/:id", verifyJWT, async (req, res) => {
           return res.status(400).send({ message: "Invalid Post ID format." });
         }
         if (type !== "upvote" && type !== "downvote") {
-          return res
-            .status(400)
-            .send({
-              message: "Invalid vote type. Must be 'upvote' or 'downvote'.",
-            });
+          return res.status(400).send({
+            message: "Invalid vote type. Must be 'upvote' or 'downvote'.",
+          });
         }
 
         const updateField = type === "upvote" ? "upVote" : "downVote";
