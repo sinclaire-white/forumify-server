@@ -255,11 +255,43 @@ app.get("/announcements", async (req, res) => {
       }
     });
 
-    // Admin-only route to get all users
-    app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
-      const users = await userCollection.find().toArray();
-      res.send(users);
+  // Admin-only route to get all users with search and pagination
+app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
+  try {
+    const { search, page = 1, limit = 10 } = req.query; // Default limit to 10 as per requirement
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    let query = {};
+
+    if (search) {
+      query.name = { $regex: search, $options: "i" }; // Case-insensitive search on 'name'
+    }
+
+    // Get total count of users matching the search query
+    const totalUsers = await userCollection.countDocuments(query);
+
+    const users = await userCollection
+      .find(query)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .toArray();
+
+    // Remove sensitive info like password (if stored, though usually not for users)
+    const sanitizedUsers = users.map(user => {
+        const { password, ...rest } = user; // Destructure to exclude password
+        return rest;
     });
+
+    res.send({
+      users: sanitizedUsers,
+      totalUsers,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalUsers / parseInt(limit)),
+    });
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).send({ message: "Internal server error fetching users." });
+  }
+});
 
     // Admin-only route to make a user admin
     app.patch("/users/make-admin", verifyJWT, verifyAdmin, async (req, res) => {
