@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const Stripe = require("stripe");
 require("dotenv").config();
 const admin = require("firebase-admin");
 const jwt = require("jsonwebtoken");
@@ -16,7 +17,7 @@ const decodedKey = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
 );
 const serviceAccount = JSON.parse(decodedKey);
 
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -43,81 +44,7 @@ async function run() {
     const tagsCollection = db.collection("tags");
     const announcementsCollection = db.collection("announcements");
     const searchesCollection = db.collection("searches");
-    // Root route
-    app.get("/", (req, res) => {
-      res.send("Server is running!");
-    });
 
-    // Save or update user (register or Google login)
-
-    app.post("/users", async (req, res) => {
-      const user = req.body;
-      const existingUser = await userCollection.findOne({ email: user.email });
-
-      if (existingUser) {
-        // Ensure existing users also have role and badge if missing (for retrofitting)
-        let needsUpdate = false;
-        let updateFields = {};
-
-        if (!existingUser.badge) {
-          //  If badge is missing
-          updateFields.badge = "bronze";
-          needsUpdate = true;
-        }
-        if (!existingUser.role) {
-          //  If role is missing
-          updateFields.role =
-            user.email === "white@walter.com" ? "admin" : "user";
-          needsUpdate = true;
-        }
-
-        if (needsUpdate) {
-          await userCollection.updateOne(
-            { email: user.email },
-            { $set: updateFields }
-          );
-          // Fetch updated user to send back
-          const updatedExistingUser = await userCollection.findOne({
-            email: user.email,
-          });
-          return res.send({
-            message: "User already exists, updated info",
-            user: updatedExistingUser,
-          });
-        }
-
-        return res.send({ message: "User already exists", user: existingUser });
-      }
-
-      // Assign role and badge for NEW users
-      user.role = user.email === "white@walter.com" ? "admin" : "user";
-      user.badge = "bronze"; // Default to bronze upon registration
-
-      const result = await userCollection.insertOne(user);
-      res.send(result);
-    });
-
-    // JWT creation route (verify Firebase token)
-    app.post("/jwt", async (req, res) => {
-      const { token } = req.body;
-      // console.log("Incoming Firebase Token:", token?.slice(0, 30), "...");
-
-      try {
-        const decodedUser = await admin.auth().verifyIdToken(token);
-        console.log(" Token verified for:", decodedUser.email);
-
-        const jwtToken = jwt.sign(
-          { email: decodedUser.email, uid: decodedUser.uid },
-          process.env.JWT_SECRET,
-          { expiresIn: "7d" }
-        );
-
-        res.send({ token: jwtToken });
-      } catch (error) {
-        console.error("❌ Firebase token verification failed:", error.message);
-        res.status(401).send({ error: "Unauthorized: Invalid Firebase token" });
-      }
-    });
 
     // JWT verification middleware
     const verifyJWT = (req, res, next) => {
@@ -156,6 +83,73 @@ async function run() {
       next();
     };
 
+    // Root route
+    app.get("/", (req, res) => {
+      res.send("Server is running!");
+    });
+
+    // Save or update user (register or Google login)
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      const existingUser = await userCollection.findOne({ email: user.email });
+
+      if (existingUser) {
+        let needsUpdate = false;
+        let updateFields = {};
+
+        if (!existingUser.badge) {
+          updateFields.badge = "bronze";
+          needsUpdate = true;
+        }
+        if (!existingUser.role) {
+          updateFields.role =
+            user.email === "white@walter.com" ? "admin" : "user";
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          await userCollection.updateOne(
+            { email: user.email },
+            { $set: updateFields }
+          );
+          const updatedExistingUser = await userCollection.findOne({
+            email: user.email,
+          });
+          return res.send({
+            message: "User already exists, updated info",
+            user: updatedExistingUser,
+          });
+        }
+
+        return res.send({ message: "User already exists", user: existingUser });
+      }
+
+      user.role = user.email === "white@walter.com" ? "admin" : "user";
+      user.badge = "bronze";
+      const result = await userCollection.insertOne(user);
+      res.send(result);
+    });
+
+    // JWT creation route (verify Firebase token)
+    app.post("/jwt", async (req, res) => {
+      const { token } = req.body;
+      try {
+        const decodedUser = await admin.auth().verifyIdToken(token);
+        console.log("Token verified for:", decodedUser.email);
+
+        const jwtToken = jwt.sign(
+          { email: decodedUser.email, uid: decodedUser.uid },
+          process.env.JWT_SECRET,
+          { expiresIn: "7d" }
+        );
+
+        res.send({ token: jwtToken });
+      } catch (error) {
+        console.error("❌ Firebase token verification failed:", error.message);
+        res.status(401).send({ error: "Unauthorized: Invalid Firebase token" });
+      }
+    });
+
     // Admin-only route to get site statistics
     app.get("/admin-stats", verifyJWT, verifyAdmin, async (req, res) => {
       try {
@@ -173,9 +167,8 @@ async function run() {
     });
 
     // Admin-only route to add a new tag
-
     app.post("/tags", verifyJWT, verifyAdmin, async (req, res) => {
-      const { names } = req.body; // Expect an array of tag names
+      const { names } = req.body;
       if (!Array.isArray(names) || names.length === 0) {
         return res
           .status(400)
@@ -206,7 +199,8 @@ async function run() {
         res.status(500).send({ message: "Internal server error adding tags." });
       }
     });
-    // Admin-only route to get all tags (useful for frontend dropdowns)
+
+    // Admin-only route to get all tags
     app.get("/tags", async (req, res) => {
       try {
         const tags = await tagsCollection.find({}).toArray();
@@ -220,35 +214,39 @@ async function run() {
     });
 
     // Admin-only route to make an announcement
+    app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
+      const { title, description, authorImage } = req.body;
 
-    // In index.js, modify /announcements POST route
-app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
-  const { authorName, title, description, authorImage } = req.body;
+      if (!title || !description) {
+        return res
+          .status(400)
+          .send({ message: "Missing required fields: title and description." });
+      }
 
-  if (!authorName || !title || !description) {
-    return res.status(400).send({ message: "Missing required announcement fields." });
-  }
-
-  try {
-    const newAnnouncement = {
-      authorName,
-      title,
-      description,
-      authorImage: authorImage || null,
-      createdAt: new Date(),
-    };
-    const result = await announcementsCollection.insertOne(newAnnouncement);
-    res.status(201).send({
-      message: "Announcement created successfully",
-      announcementId: result.insertedId,
+      try {
+        const user = await userCollection.findOne({ email: req.user.email });
+        const authorName = user?.name || "Site Admin";
+        const newAnnouncement = {
+          authorName,
+          title,
+          description,
+          authorImage: authorImage || null,
+          createdAt: new Date(),
+        };
+        const result = await announcementsCollection.insertOne(newAnnouncement);
+        res.status(201).send({
+          message: "Announcement created successfully",
+          announcementId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Error creating announcement:", error);
+        res
+          .status(500)
+          .send({ message: "Internal server error creating announcement." });
+      }
     });
-  } catch (error) {
-    console.error("Error creating announcement:", error);
-    res.status(500).send({ message: "Internal server error creating announcement." });
-  }
-});
 
-    // Public route to get all announcements (for homepage display)
+    // Public route to get all announcements
     app.get("/announcements", async (req, res) => {
       try {
         const announcements = await announcementsCollection
@@ -280,7 +278,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    // Admin-only route to delete a reported comment/activity
+    // Admin-only route to delete a reported comment
     app.delete("/reports/:id", verifyJWT, verifyAdmin, async (req, res) => {
       const reportId = req.params.id;
 
@@ -296,11 +294,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           return res.status(404).send({ message: "Report not found." });
         }
 
-        // OPTIONAL: Delete the actual comment associated with this report
-        // This is a strong action. Decide if you want to implement this.
-        // If you do, make sure commentId in report is a string and matches comments._id
         if (report.commentId) {
-          // Attempt to delete the actual comment
           const commentDeleteResult = await commentsCollection.deleteOne({
             _id: new ObjectId(report.commentId),
           });
@@ -313,7 +307,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           }
         }
 
-        // Delete the report entry itself
         const result = await reportsCollection.deleteOne({
           _id: new ObjectId(reportId),
         });
@@ -336,7 +329,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    // Admin-only route to dismiss/approve a report (without deleting comment)
+    // Admin-only route to dismiss a report
     app.patch(
       "/reports/:id/dismiss",
       verifyJWT,
@@ -372,7 +365,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     );
 
-    // Public route to check if a user exists by email (no JWT required)
+    // Public route to check if a user exists by email
     app.get("/users/check-email", async (req, res) => {
       const email = req.query.email;
       if (!email) {
@@ -390,8 +383,8 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
               email: user.email,
               name: user.name,
               photo: user.photo,
-              role: user.role || "user", // Ensure role is always sent, default to 'user'
-              badge: user.badge || "bronze", // Ensure badge is always sent, default to 'bronze'
+              role: user.role || "user",
+              badge: user.badge || "bronze",
             },
           });
         } else {
@@ -408,26 +401,23 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
     // Admin-only route to get all users with search and pagination
     app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
       try {
-        const { search, page = 1, limit = 10 } = req.query; // Default limit to 10 as per requirement
+        const { search, page = 1, limit = 10 } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         let query = {};
 
         if (search) {
-          query.name = { $regex: search, $options: "i" }; // Case-insensitive search on 'name'
+          query.name = { $regex: search, $options: "i" };
         }
 
-        // Get total count of users matching the search query
         const totalUsers = await userCollection.countDocuments(query);
-
         const users = await userCollection
           .find(query)
           .skip(skip)
           .limit(parseInt(limit))
           .toArray();
 
-        // Remove sensitive info like password (if stored, though usually not for users)
         const sanitizedUsers = users.map((user) => {
-          const { password, ...rest } = user; // Destructure to exclude password
+          const { password, ...rest } = user;
           return rest;
         });
 
@@ -445,7 +435,24 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    // Admin-only route to make a user admin (updated to use ID from params)
+    // Route to fetch a single user by email
+    app.get("/users/:email", verifyJWT, async (req, res) => {
+      const email = req.params.email;
+      try {
+        const query = { email: email };
+        const user = await userCollection.findOne(query);
+        if (user) {
+          res.send(user);
+        } else {
+          res.status(404).send({ message: "User not found." });
+        }
+      } catch (error) {
+        console.error("Error fetching user by email:", error);
+        res.status(500).send({ message: "Internal server error." });
+      }
+    });
+
+    // Admin-only route to make a user admin
     app.patch(
       "/users/:id/make-admin",
       verifyJWT,
@@ -466,7 +473,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           }
 
           if (user.email === "white@walter.com") {
-            // Still prevent changing the main admin
             return res
               .status(400)
               .send({ error: "Cannot change main admin role." });
@@ -501,10 +507,9 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     );
 
-    // for UserProfile: Update User Badge
+    // Update User Badge
     app.patch("/users/update-badge", verifyJWT, async (req, res) => {
       const { email, badge } = req.body;
-      // Only the user themselves or an admin can update their badge
       if (req.user.email !== email && req.user.role !== "admin") {
         return res.status(403).send({
           message: "Forbidden: Not authorized to update this user's badge.",
@@ -536,7 +541,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    // check post count of a user (Protected: requires JWT)
+    // Check post count of a user
     app.get("/posts/count", verifyJWT, async (req, res) => {
       const email = req.query.email;
       if (!email || email !== req.user.email) {
@@ -588,7 +593,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           pipeline.push({ $match: query });
         }
 
-        // Popularity sort in /posts GET endpoint (within existing logic)
         if (sort === "popularity") {
           pipeline.push(
             {
@@ -604,10 +608,8 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
 
         pipeline.push({ $skip: skip }, { $limit: limitNum });
 
-        // Fetch posts data
         const posts = await postCollection.aggregate(pipeline).toArray();
 
-        // Fetch comment counts for each post (optional but good for UI)
         const postsWithCounts = await Promise.all(
           posts.map(async (post) => {
             const commentCount = await commentsCollection.countDocuments({
@@ -617,7 +619,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           })
         );
 
-        // Get total count of matching posts for pagination
         const totalCount = await postCollection.countDocuments(query);
 
         res.send({ posts: postsWithCounts, totalCount });
@@ -627,29 +628,9 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    //  Popular searches endpoints
-    app.post("/searches", async (req, res) => {
-      const { term } = req.body;
-      await searchesCollection.insertOne({ term, createdAt: new Date() });
-      res.send({ success: true });
-    });
+    
 
-    app.get("/popular-searches", async (req, res) => {
-      try {
-        const searches = await searchesCollection
-          .aggregate([
-            { $group: { _id: "$term", count: { $sum: 1 } } },
-            { $sort: { count: -1 } },
-            { $limit: 3 },
-          ])
-          .toArray();
-        res.json(searches); // Use json() instead of send()
-      } catch (error) {
-        console.error("Error fetching popular searches:", error);
-        res.status(500).json({ error: "Failed to fetch popular searches" }); // Consistent error format
-      }
-    });
-    // Route to get a single post by ID (public access)
+    // Route to get a single post by ID
     app.get("/posts/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -663,12 +644,11 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           return res.status(404).send({ message: "Post not found." });
         }
 
-        // Fetch comment count for the single post
         const commentCount = await commentsCollection.countDocuments({
           postId: post._id.toString(),
         });
 
-        res.send({ ...post, commentCount }); // Include commentCount
+        res.send({ ...post, commentCount });
       } catch (error) {
         console.error("Error fetching single post:", error);
         res
@@ -677,7 +657,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    //  Add a comment to a post (Protected: requires JWT)
+    // Add a comment to a post
     app.post("/comments", verifyJWT, async (req, res) => {
       const {
         postId,
@@ -686,14 +666,13 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
         authorName,
         authorPhoto,
         postTitle,
-      } = req.body; // Added postTitle
+      } = req.body;
       if (!postId || !commentText || !authorEmail || !postTitle) {
         return res
           .status(400)
           .send({ message: "Missing required comment fields." });
       }
 
-      // Optional: Check if post exists
       const postExists = await postCollection.countDocuments({
         _id: new ObjectId(postId),
       });
@@ -704,8 +683,8 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
 
       const comment = {
-        postId: postId, // Store as string for easier querying from frontend ID
-        postTitle: postTitle, // Store post title for hint-2
+        postId: postId,
+        postTitle: postTitle,
         commentText,
         authorEmail,
         authorName,
@@ -716,14 +695,14 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       res.send(result);
     });
 
-    // Get comments for a specific post (Public access)
+    // Get comments for a specific post
     app.get("/comments/:postId", async (req, res) => {
       try {
         const postId = req.params.postId;
         const comments = await commentsCollection
           .find({ postId: postId })
           .sort({ createdAt: 1 })
-          .toArray(); // Sort oldest to newest
+          .toArray();
         res.send(comments);
       } catch (error) {
         console.error("Error fetching comments:", error);
@@ -731,7 +710,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    //   Submit a comment report ===
+    // Submit a comment report
     app.post("/reports", verifyJWT, async (req, res) => {
       const { commentId, feedback, reporterEmail } = req.body;
 
@@ -742,7 +721,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
         });
       }
 
-      // Security check: Ensure the reporter's email matches the authenticated user's email
       if (reporterEmail !== req.user.email) {
         return res.status(403).send({
           message:
@@ -751,7 +729,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
 
       try {
-        // Optional: Check if the comment actually exists (good practice)
         const comment = await commentsCollection.findOne({
           _id: new ObjectId(commentId),
         });
@@ -759,7 +736,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           return res.status(404).send({ message: "Comment not found." });
         }
 
-        // Check if this specific user has already reported this comment to prevent duplicates
         const existingReport = await reportsCollection.findOne({
           commentId: commentId,
           reporterEmail: reporterEmail,
@@ -771,16 +747,15 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
             .send({ message: "You have already reported this comment." });
         }
 
-        // Create the report document to be stored in the 'reports' collection
         const report = {
           commentId: commentId,
-          postId: comment.postId, // Link report to the original post ID
-          commentText: comment.commentText, // Store comment text for admin context
-          commenterEmail: comment.authorEmail, // Store commenter's email
-          feedback, // The selected feedback reason
-          reporterEmail, // The email of the user who reported
-          status: "pending", // Initial status for admin review
-          reportedAt: new Date(), // Timestamp of the report
+          postId: comment.postId,
+          commentText: comment.commentText,
+          commenterEmail: comment.authorEmail,
+          feedback,
+          reporterEmail,
+          status: "pending",
+          reportedAt: new Date(),
         };
         const result = await reportsCollection.insertOne(report);
         res.send(result);
@@ -792,7 +767,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    // Add new post (Protected: requires JWT)
+    // Add new post
     app.post("/posts", verifyJWT, checkPostLimit, async (req, res) => {
       const post = req.body;
       post.upVote = 0;
@@ -804,14 +779,12 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       res.send(result);
     });
 
-    //for UserProfile: Get a user's recent posts
-
+    // Get a user's recent posts
     app.get("/my-posts", verifyJWT, async (req, res) => {
       try {
         const email = req.query.email;
-        const limit = parseInt(req.query.limit) || 0; // Optional limit (e.g., for "recent 3 posts")
+        const limit = parseInt(req.query.limit) || 0;
 
-        // Security check: Ensure the requested email matches the authenticated user's email
         if (!email || email !== req.user.email) {
           return res
             .status(403)
@@ -819,34 +792,31 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
         }
 
         let pipeline = [
-          { $match: { authorEmail: email } }, // Filter by the user's email
+          { $match: { authorEmail: email } },
           {
             $addFields: {
-              // Convert the post's ObjectId _id to a string to match comment.postId
               postIdString: { $toString: "$_id" },
             },
           },
           {
             $lookup: {
-              // Join with comments collection to count comments
               from: "comments",
-              localField: "postIdString", // Use the new string field for lookup
-              foreignField: "postId", // Comment's postId (string of ObjectId)
+              localField: "postIdString",
+              foreignField: "postId",
               as: "comments",
             },
           },
           {
             $addFields: {
-              // Add commentCount field
-              commentCount: { $size: "$comments" }, // Count of comments for each post
+              commentCount: { $size: "$comments" },
             },
           },
-          { $sort: { createdAt: -1 } }, // Sort newest to oldest for "Recent Posts"
-          { $project: { comments: 0, postIdString: 0 } }, // Exclude the comments array and the temporary postIdString
+          { $sort: { createdAt: -1 } },
+          { $project: { comments: 0, postIdString: 0 } },
         ];
 
         if (limit > 0) {
-          pipeline.push({ $limit: limit }); // Apply limit if specified (e.g., for 3 recent posts)
+          pipeline.push({ $limit: limit });
         }
 
         const myPosts = await postCollection.aggregate(pipeline).toArray();
@@ -859,7 +829,7 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    // post visibility
+    // Post visibility
     app.patch("/posts/:id/visibility", verifyJWT, async (req, res) => {
       const { visibility } = req.body;
       await postCollection.updateOne(
@@ -869,11 +839,11 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       res.send({ success: true });
     });
 
-    // Delete a post (Protected: requires JWT, only author can delete)
+    // Delete a post
     app.delete("/posts/:id", verifyJWT, async (req, res) => {
       try {
         const postId = req.params.id;
-        const userEmail = req.user.email; // Email of the authenticated user
+        const userEmail = req.user.email;
 
         if (!ObjectId.isValid(postId)) {
           return res.status(400).send({ message: "Invalid Post ID format." });
@@ -886,14 +856,12 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           return res.status(404).send({ message: "Post not found." });
         }
 
-        // Authorization check: Ensure only the author can delete their post
         if (post.authorEmail !== userEmail) {
           return res.status(403).send({
             message: "Forbidden: You are not the author of this post.",
           });
         }
 
-        // Delete the post
         const result = await postCollection.deleteOne({
           _id: new ObjectId(postId),
         });
@@ -904,8 +872,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
             .send({ message: "Post not found or could not be deleted." });
         }
 
-        // IMPORTANT: Also delete all associated comments for the deleted post
-        // Assuming comments `postId` field stores the string ID of the post
         await commentsCollection.deleteMany({ postId: postId });
 
         res.send({
@@ -919,14 +885,59 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           .send({ message: "Internal server error during post deletion." });
       }
     });
+   // Record a search term
+app.post("/record-search", verifyJWT, async (req, res) => {
+  try {
+    const { searchTerm } = req.body;
+    const userEmail = req.user.email;
+    if (!searchTerm || typeof searchTerm !== "string") {
+      return res.status(400).send({ message: "Invalid search term" });
+    }
+    const trimmedTerm = searchTerm.trim().toLowerCase();
+    await searchesCollection.updateOne(
+      { searchTerm: trimmedTerm, userEmail },
+      { $set: { lastSearched: new Date() } },
+      { upsert: true }
+    );
+    res.send({ message: "Search recorded" });
+  } catch (error) {
+    console.error("Error recording search:", error);
+    res.status(500).send({ message: "Server error" });
+  }
+});
 
-    // Update post votes (Protected: requires JWT)
-    // Robust Voting System: Prevents multiple votes from the same user
+// Get top 3 recent popular searches
+app.get("/popular-searches", async (req, res) => {
+  try {
+    const { limit = 3, sort = "lastSearched" } = req.query;
+    const parsedLimit = parseInt(limit) || 3;
+    const pipeline = [
+      {
+        $match: { searchTerm: { $ne: null, $type: "string" } }
+      },
+      {
+        $group: {
+          _id: "$searchTerm",
+          count: { $sum: 1 },
+          lastSearched: { $max: "$lastSearched" }
+        }
+      },
+      { $sort: { lastSearched: -1 } },
+      { $limit: parsedLimit }
+    ];
+    const results = await searchesCollection.aggregate(pipeline).toArray();
+    res.send(results);
+  } catch (error) {
+    console.error("Error fetching popular searches:", error);
+    res.status(500).send({ message: "Server error" });
+  }
+});
+    // Update post votes
     app.patch("/posts/vote/:id", verifyJWT, async (req, res) => {
       try {
         const postId = req.params.id;
-        const { type } = req.body; // 'upvote' or 'downvote'
-        const userEmail = req.user.email; // Get user email from JWT
+        const { type } = req.body;
+        const userEmail = req.user.email;
 
         if (!ObjectId.isValid(postId)) {
           return res.status(400).send({ message: "Invalid Post ID format." });
@@ -945,7 +956,6 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           return res.status(404).send({ message: "Post not found." });
         }
 
-        // Initialize votedBy if it doesn't exist (for old posts)
         if (!post.votedBy) {
           post.votedBy = [];
         }
@@ -958,31 +968,27 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
         let message = "";
 
         if (existingVoteIndex === -1) {
-          // Case 1: User has NOT voted on this post yet
           update = {
             $inc: { [type === "upvote" ? "upVote" : "downVote"]: 1 },
             $push: { votedBy: { userEmail: userEmail, voteType: type } },
           };
           message = `Post ${type}d successfully.`;
         } else {
-          // User HAS voted on this post before
           const existingVoteType = post.votedBy[existingVoteIndex].voteType;
 
           if (existingVoteType === type) {
-            // Case 2: User clicks the SAME vote type again (undo vote)
             update = {
-              $inc: { [type === "upvote" ? "upVote" : "downVote"]: -1 }, // Decrement vote
-              $pull: { votedBy: { userEmail: userEmail } }, // Remove user's vote entry
+              $inc: { [type === "upvote" ? "upVote" : "downVote"]: -1 },
+              $pull: { votedBy: { userEmail: userEmail } },
             };
             message = `Your ${type} has been removed.`;
           } else {
-            // Case 3: User clicks the OPPOSITE vote type (change vote)
             update = {
               $inc: {
-                [existingVoteType === "upvote" ? "upVote" : "downVote"]: -1, // Decrement old vote
-                [type === "upvote" ? "upVote" : "downVote"]: 1, // Increment new vote
+                [existingVoteType === "upvote" ? "upVote" : "downVote"]: -1,
+                [type === "upvote" ? "upVote" : "downVote"]: 1,
               },
-              $set: { [`votedBy.${existingVoteIndex}.voteType`]: type }, // Update vote type in array
+              $set: { [`votedBy.${existingVoteIndex}.voteType`]: type },
             };
             message = `Your vote has been changed to ${type}.`;
           }
@@ -1012,10 +1018,9 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    // update badge
-    // update badge (client-triggered after payment, with JWT verification)
+    // Update membership
     app.patch("/users/membership", verifyJWT, async (req, res) => {
-      const { email } = req.body;
+      const { email, transactionId, amount, currency } = req.body;
 
       if (req.user.email !== email) {
         return res.status(403).send({
@@ -1027,13 +1032,19 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
       try {
         const result = await userCollection.updateOne(
           { email: email },
-          { $set: { membership: true, badge: "gold" } }
+          {
+            $set: {
+              membership: true,
+              badge: "gold",
+              transactionId,
+              amount,
+              currency,
+            },
+          }
         );
 
         if (result.matchedCount === 0) {
-          return res
-            .status(404)
-            .send({ message: "User not found or membership already updated." });
+          return res.status(404).send({ message: "User not found." });
         }
 
         if (result.modifiedCount === 0) {
@@ -1050,8 +1061,18 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
           .send({ message: "Internal server error updating membership." });
       }
     });
-    app.post("/create-checkout-session", async (req, res) => {
-      const { email } = req.body; // Assuming you pass user's email from frontend
+
+    // Create Stripe checkout session
+    app.post("/create-checkout-session", verifyJWT, async (req, res) => {
+      const { email } = req.body;
+
+      if (!email || email !== req.user.email) {
+        return res
+          .status(400)
+          .send({
+            error: "Valid email is required and must match authenticated user",
+          });
+      }
 
       try {
         const session = await stripe.checkout.sessions.create({
@@ -1065,20 +1086,31 @@ app.post("/announcements", verifyJWT, verifyAdmin, async (req, res) => {
                   name: "Forumify Membership",
                   description: "Unlock unlimited posts and a Gold badge!",
                 },
-                unit_amount: 1000, // $10.00
+                unit_amount: 1000,
               },
               quantity: 1,
             },
           ],
-          customer_email: email, // Pre-fill email, good for tracking
-          success_url: `${process.env.CLIENT_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          customer_email: email,
+          success_url: `${
+            process.env.CLIENT_URL
+          }/payment-success?session_id={CHECKOUT_SESSION_ID}&email=${encodeURIComponent(
+            email
+          )}`,
           cancel_url: `${process.env.CLIENT_URL}/payment-cancel`,
         });
-        res.send({ url: session.url });
+        res.send({ id: session.id, url: session.url });
       } catch (err) {
-        res.status(500).send({ error: err.message });
+        console.error("Error creating Stripe checkout session:", err);
+        res
+          .status(500)
+          .send({
+            error: "Failed to create checkout session",
+            details: err.message,
+          });
       }
     });
+
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
     });
