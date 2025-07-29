@@ -628,7 +628,30 @@ async function run() {
       }
     });
 
-    
+    // Update user details by ID (e.g., name, photo, badge)
+    app.patch("/users/:id", verifyJWT, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { name, photo, badge } = req.body;
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {},
+        };
+
+        if (name) updateDoc.$set.name = name;
+        if (photo) updateDoc.$set.photo = photo;
+        if (badge) updateDoc.$set.badge = badge;
+
+        const result = await userCollection.updateOne(filter, updateDoc);
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "User not found" });
+        }
+        res.send({ message: "User updated successfully", modifiedCount: result.modifiedCount });
+      } catch (error) {
+        console.error("Error updating user:", error);
+        res.status(500).send({ message: "Failed to update user", error: error.message });
+      }
+    });
 
     // Route to get a single post by ID
     app.get("/posts/:id", async (req, res) => {
