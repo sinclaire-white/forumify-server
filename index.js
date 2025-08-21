@@ -1152,8 +1152,37 @@ app.get("/top-contributors", async (req, res) => {
   }
 });
 
+// Public route to get basic site statistics
+app.get("/public-stats", async (req, res) => {
+  try {
+    const totalUsers = await userCollection.countDocuments();
+    const totalPosts = await postCollection.countDocuments();
+    const totalComments = await commentsCollection.countDocuments();
+    res.send({ totalUsers, totalPosts, totalComments });
+  } catch (error) {
+    console.error("Error fetching public stats:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
 
-
+// Public route to subscribe to newsletter
+app.post("/newsletter-subscribe", async (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).send({ message: "Email is required." });
+  }
+  try {
+    const existingSubscriber = await newsletterCollection.findOne({ email });
+    if (existingSubscriber) {
+      return res.status(409).send({ message: "You are already subscribed!" });
+    }
+    await newsletterCollection.insertOne({ email, subscribedAt: new Date() });
+    res.status(201).send({ message: "Subscription successful!" });
+  } catch (error) {
+    console.error("Error subscribing to newsletter:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
 
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
