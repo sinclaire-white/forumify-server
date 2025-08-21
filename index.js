@@ -45,7 +45,6 @@ async function run() {
     const announcementsCollection = db.collection("announcements");
     const searchesCollection = db.collection("searches");
 
-
     // JWT verification middleware
     const verifyJWT = (req, res, next) => {
       const authHeader = req.headers.authorization;
@@ -646,10 +645,15 @@ async function run() {
         if (result.matchedCount === 0) {
           return res.status(404).send({ message: "User not found" });
         }
-        res.send({ message: "User updated successfully", modifiedCount: result.modifiedCount });
+        res.send({
+          message: "User updated successfully",
+          modifiedCount: result.modifiedCount,
+        });
       } catch (error) {
         console.error("Error updating user:", error);
-        res.status(500).send({ message: "Failed to update user", error: error.message });
+        res
+          .status(500)
+          .send({ message: "Failed to update user", error: error.message });
       }
     });
 
@@ -908,53 +912,53 @@ async function run() {
           .send({ message: "Internal server error during post deletion." });
       }
     });
-   // Record a search term
-app.post("/record-search", verifyJWT, async (req, res) => {
-  try {
-    const { searchTerm } = req.body;
-    const userEmail = req.user.email;
-    if (!searchTerm || typeof searchTerm !== "string") {
-      return res.status(400).send({ message: "Invalid search term" });
-    }
-    const trimmedTerm = searchTerm.trim().toLowerCase();
-    await searchesCollection.updateOne(
-      { searchTerm: trimmedTerm, userEmail },
-      { $set: { lastSearched: new Date() } },
-      { upsert: true }
-    );
-    res.send({ message: "Search recorded" });
-  } catch (error) {
-    console.error("Error recording search:", error);
-    res.status(500).send({ message: "Server error" });
-  }
-});
-
-// Get top 3 recent popular searches
-app.get("/popular-searches", async (req, res) => {
-  try {
-    const { limit = 3, sort = "lastSearched" } = req.query;
-    const parsedLimit = parseInt(limit) || 3;
-    const pipeline = [
-      {
-        $match: { searchTerm: { $ne: null, $type: "string" } }
-      },
-      {
-        $group: {
-          _id: "$searchTerm",
-          count: { $sum: 1 },
-          lastSearched: { $max: "$lastSearched" }
+    // Record a search term
+    app.post("/record-search", verifyJWT, async (req, res) => {
+      try {
+        const { searchTerm } = req.body;
+        const userEmail = req.user.email;
+        if (!searchTerm || typeof searchTerm !== "string") {
+          return res.status(400).send({ message: "Invalid search term" });
         }
-      },
-      { $sort: { lastSearched: -1 } },
-      { $limit: parsedLimit }
-    ];
-    const results = await searchesCollection.aggregate(pipeline).toArray();
-    res.send(results);
-  } catch (error) {
-    console.error("Error fetching popular searches:", error);
-    res.status(500).send({ message: "Server error" });
-  }
-});
+        const trimmedTerm = searchTerm.trim().toLowerCase();
+        await searchesCollection.updateOne(
+          { searchTerm: trimmedTerm, userEmail },
+          { $set: { lastSearched: new Date() } },
+          { upsert: true }
+        );
+        res.send({ message: "Search recorded" });
+      } catch (error) {
+        console.error("Error recording search:", error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // Get top 3 recent popular searches
+    app.get("/popular-searches", async (req, res) => {
+      try {
+        const { limit = 3, sort = "lastSearched" } = req.query;
+        const parsedLimit = parseInt(limit) || 3;
+        const pipeline = [
+          {
+            $match: { searchTerm: { $ne: null, $type: "string" } },
+          },
+          {
+            $group: {
+              _id: "$searchTerm",
+              count: { $sum: 1 },
+              lastSearched: { $max: "$lastSearched" },
+            },
+          },
+          { $sort: { lastSearched: -1 } },
+          { $limit: parsedLimit },
+        ];
+        const results = await searchesCollection.aggregate(pipeline).toArray();
+        res.send(results);
+      } catch (error) {
+        console.error("Error fetching popular searches:", error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
     // Update post votes
     app.patch("/posts/vote/:id", verifyJWT, async (req, res) => {
       try {
@@ -1090,11 +1094,9 @@ app.get("/popular-searches", async (req, res) => {
       const { email } = req.body;
 
       if (!email || email !== req.user.email) {
-        return res
-          .status(400)
-          .send({
-            error: "Valid email is required and must match authenticated user",
-          });
+        return res.status(400).send({
+          error: "Valid email is required and must match authenticated user",
+        });
       }
 
       try {
@@ -1125,64 +1127,160 @@ app.get("/popular-searches", async (req, res) => {
         res.send({ id: session.id, url: session.url });
       } catch (err) {
         console.error("Error creating Stripe checkout session:", err);
-        res
-          .status(500)
-          .send({
-            error: "Failed to create checkout session",
-            details: err.message,
-          });
+        res.status(500).send({
+          error: "Failed to create checkout session",
+          details: err.message,
+        });
       }
     });
 
     // Public route to get top contributors by comment count
-app.get("/top-contributors", async (req, res) => {
-  try {
-    const topUsers = await commentsCollection.aggregate([
-      { $group: { _id: "$authorEmail", count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 5 },
-      { $lookup: { from: "users", localField: "_id", foreignField: "email", as: "userDetails" } },
-      { $unwind: "$userDetails" },
-      { $project: { email: "$_id", count: 1, name: "$userDetails.name", photo: "$userDetails.photo", badge: "$userDetails.badge" } }
-    ]).toArray();
-    res.send(topUsers);
-  } catch (error) {
-    console.error("Error fetching top contributors:", error);
-    res.status(500).send({ message: "Internal server error" });
-  }
-});
+    app.get("/top-contributors", async (req, res) => {
+      try {
+        const topUsers = await commentsCollection
+          .aggregate([
+            { $group: { _id: "$authorEmail", count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 5 },
+            {
+              $lookup: {
+                from: "users",
+                localField: "_id",
+                foreignField: "email",
+                as: "userDetails",
+              },
+            },
+            { $unwind: "$userDetails" },
+            {
+              $project: {
+                email: "$_id",
+                count: 1,
+                name: "$userDetails.name",
+                photo: "$userDetails.photo",
+                badge: "$userDetails.badge",
+              },
+            },
+          ])
+          .toArray();
+        res.send(topUsers);
+      } catch (error) {
+        console.error("Error fetching top contributors:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+    // Public route to get top contributors by post count
+    app.get("/top-contributors", async (req, res) => {
+      try {
+        const topContributors = await postCollection
+          .aggregate([
+            {
+              $group: {
+                _id: "$authorEmail",
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { count: -1 } },
+            { $limit: 5 },
+            {
+              $lookup: {
+                from: "users",
+                localField: "_id",
+                foreignField: "email",
+                as: "user",
+              },
+            },
+            { $unwind: "$user" },
+            {
+              $project: {
+                _id: 0,
+                email: "$_id",
+                count: 1,
+                name: "$user.name",
+                photo: "$user.photo",
+                badge: "$user.badge",
+              },
+            },
+          ])
+          .toArray();
+        res.send(topContributors);
+      } catch (error) {
+        console.error("Error fetching top contributors:", error);
+        res.status(500).send({ message: "Internal server error." });
+      }
+    });
+    // Public route to get trending posts
+    app.get("/trending-posts", async (req, res) => {
+      try {
+        const trendingPosts = await postCollection
+          .aggregate([
+            {
+              $addFields: {
+                postIdString: { $toString: "$_id" },
+              },
+            },
+            {
+              $lookup: {
+                from: "comments",
+                localField: "postIdString",
+                foreignField: "postId",
+                as: "comments",
+              },
+            },
+            {
+              $addFields: {
+                commentCount: { $size: "$comments" },
+              },
+            },
+            { $sort: { commentCount: -1 } },
+            { $limit: 3 }, // Show the top 3 trending posts
+            { $project: { comments: 0, postIdString: 0 } },
+          ])
+          .toArray();
 
-// Public route to get basic site statistics
-app.get("/public-stats", async (req, res) => {
-  try {
-    const totalUsers = await userCollection.countDocuments();
-    const totalPosts = await postCollection.countDocuments();
-    const totalComments = await commentsCollection.countDocuments();
-    res.send({ totalUsers, totalPosts, totalComments });
-  } catch (error) {
-    console.error("Error fetching public stats:", error);
-    res.status(500).send({ message: "Internal server error" });
-  }
-});
+        res.send(trendingPosts);
+      } catch (error) {
+        console.error("Error fetching trending posts:", error);
+        res.status(500).send({ message: "Internal server error." });
+      }
+    });
+    // Public route to get basic site statistics
+    app.get("/public-stats", async (req, res) => {
+      try {
+        const totalUsers = await userCollection.countDocuments();
+        const totalPosts = await postCollection.countDocuments();
+        const totalComments = await commentsCollection.countDocuments();
+        res.send({ totalUsers, totalPosts, totalComments });
+      } catch (error) {
+        console.error("Error fetching public stats:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
 
-// Public route to subscribe to newsletter
-app.post("/newsletter-subscribe", async (req, res) => {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).send({ message: "Email is required." });
-  }
-  try {
-    const existingSubscriber = await newsletterCollection.findOne({ email });
-    if (existingSubscriber) {
-      return res.status(409).send({ message: "You are already subscribed!" });
-    }
-    await newsletterCollection.insertOne({ email, subscribedAt: new Date() });
-    res.status(201).send({ message: "Subscription successful!" });
-  } catch (error) {
-    console.error("Error subscribing to newsletter:", error);
-    res.status(500).send({ message: "Internal server error" });
-  }
-});
+    // Public route to subscribe to newsletter
+    app.post("/newsletter-subscribe", async (req, res) => {
+      const { email } = req.body;
+      if (!email) {
+        return res.status(400).send({ message: "Email is required." });
+      }
+      try {
+        const existingSubscriber = await newsletterCollection.findOne({
+          email,
+        });
+        if (existingSubscriber) {
+          return res
+            .status(409)
+            .send({ message: "You are already subscribed!" });
+        }
+        await newsletterCollection.insertOne({
+          email,
+          subscribedAt: new Date(),
+        });
+        res.status(201).send({ message: "Subscription successful!" });
+      } catch (error) {
+        console.error("Error subscribing to newsletter:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
 
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
