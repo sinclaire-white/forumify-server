@@ -1134,6 +1134,27 @@ app.get("/popular-searches", async (req, res) => {
       }
     });
 
+    // Public route to get top contributors by comment count
+app.get("/top-contributors", async (req, res) => {
+  try {
+    const topUsers = await commentsCollection.aggregate([
+      { $group: { _id: "$authorEmail", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 },
+      { $lookup: { from: "users", localField: "_id", foreignField: "email", as: "userDetails" } },
+      { $unwind: "$userDetails" },
+      { $project: { email: "$_id", count: 1, name: "$userDetails.name", photo: "$userDetails.photo", badge: "$userDetails.badge" } }
+    ]).toArray();
+    res.send(topUsers);
+  } catch (error) {
+    console.error("Error fetching top contributors:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
+
+
+
+
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
     });
